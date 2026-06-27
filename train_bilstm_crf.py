@@ -6,8 +6,8 @@ from training import LSTMTrainConfig
 
 def main():
     defaults = LSTMTrainConfig.default("bilstm_crf")
-    parser = argparse.ArgumentParser(description="训练 BiLSTM-CRF 模型")
-    parser.add_argument("--data-dir", default=defaults.data_dir, help="数据集目录")
+    parser = argparse.ArgumentParser(description="训练 BaseNP BiLSTM-CRF 模型")
+    parser.add_argument("--data-dir", default=defaults.data_dir, help="BaseNP 数据集目录")
     parser.add_argument("--output-root", default=defaults.output_root, help="输出根目录")
     parser.add_argument("--model-name", default=defaults.model_name, help="模型名称")
     parser.add_argument("--run-name", default=None, help="运行名称")

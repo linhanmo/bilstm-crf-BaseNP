@@ -23,6 +23,7 @@ from hmm import HMM
 
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
+SPLIT_SUFFIXES = (".tsv", ".txt", ".bio", ".bmes")
 
 
 def resolve_project_path(path_like: Union[str, Path]) -> Path:
@@ -44,6 +45,15 @@ def to_project_relative_path(path_like: Union[str, Path]) -> Path:
 def display_project_path(path_like: Union[str, Path]) -> str:
     relative = to_project_relative_path(path_like)
     return relative.as_posix()
+
+
+def resolve_split_path(data_dir: Union[str, Path], split: str) -> Path:
+    root = resolve_project_path(data_dir)
+    for suffix in SPLIT_SUFFIXES:
+        candidate = root / f"{split}{suffix}"
+        if candidate.is_file():
+            return candidate
+    raise FileNotFoundError(f"未找到 {split} 数据文件: {display_project_path(root)}")
 
 
 def relativize_payload(payload: Any) -> Any:
@@ -96,7 +106,7 @@ def build_map(lists_: Sequence[Sequence[str]]) -> Dict[str, int]:
 
 def build_corpus(split: str, make_vocab: bool = True, data_dir: str = ""):
     assert split in ["train", "dev", "test"]
-    file_path = resolve_project_path(data_dir) / f"{split}.char.bmes"
+    file_path = resolve_split_path(data_dir, split)
 
     word_lists: List[List[str]] = []
     tag_lists: List[List[str]] = []
@@ -106,7 +116,11 @@ def build_corpus(split: str, make_vocab: bool = True, data_dir: str = ""):
         for raw_line in f:
             line = raw_line.strip()
             if line:
-                word, tag = line.split()
+                columns = line.split()
+                if len(columns) < 2:
+                    raise ValueError(f"数据格式错误，至少需要 token 和 tag 两列: {line}")
+                word = columns[0]
+                tag = columns[-1]
                 word_list.append(word)
                 tag_list.append(tag)
             else:
@@ -360,102 +374,143 @@ class Metrics(object):
         self.predict_tags = [tag for i, tag in enumerate(self.predict_tags) if i not in indices]
 
 
-def tags_to_words(chars: Sequence[str], tags: Sequence[str]) -> List[str]:
-    words: List[str] = []
-    current: List[str] = []
+def split_chunk_tag(tag: str) -> Tuple[str, str]:
+    if tag == "O":
+        return "O", ""
+    if "-" in tag:
+        prefix, label = tag.split("-", 1)
+        return prefix.upper(), label
+    return tag.upper(), ""
 
-    for char, tag in zip(chars, tags):
-        if tag == "S":
-            if current:
-                words.append("".join(current))
-                current = []
-            words.append(char)
-        elif tag == "B":
-            if current:
-                words.append("".join(current))
-            current = [char]
-        elif tag == "I":
-            if not current:
-                current = [char]
+
+def extract_chunks(tags: Sequence[str]) -> List[Tuple[int, int, str]]:
+    chunks: List[Tuple[int, int, str]] = []
+    active_start: Optional[int] = None
+    active_label = ""
+
+    def close_chunk(end_index: int) -> None:
+        nonlocal active_start, active_label
+        if active_start is not None:
+            chunks.append((active_start, end_index, active_label))
+            active_start = None
+            active_label = ""
+
+    for index, tag in enumerate(tags):
+        prefix, label = split_chunk_tag(tag)
+
+        if prefix == "O":
+            close_chunk(index)
+            continue
+
+        if prefix in {"S", "U"}:
+            close_chunk(index)
+            chunks.append((index, index + 1, label))
+            continue
+
+        if prefix == "B":
+            close_chunk(index)
+            active_start = index
+            active_label = label
+            continue
+
+        if prefix in {"I", "M"}:
+            if active_start is None or label != active_label:
+                close_chunk(index)
+                active_start = index
+                active_label = label
+            continue
+
+        if prefix == "E":
+            if active_start is None or label != active_label:
+                close_chunk(index)
+                chunks.append((index, index + 1, label))
             else:
-                current.append(char)
-        elif tag == "E":
-            if not current:
-                current = [char]
-            else:
-                current.append(char)
-            words.append("".join(current))
-            current = []
-        else:
-            if current:
-                words.append("".join(current))
-                current = []
-            words.append(char)
+                chunks.append((active_start, index + 1, active_label))
+                active_start = None
+                active_label = ""
+            continue
 
-    if current:
-        words.append("".join(current))
-    return words
+        close_chunk(index)
+        chunks.append((index, index + 1, label or prefix))
+
+    close_chunk(len(tags))
+    return chunks
 
 
-def words_to_spans(words: Sequence[str]) -> List[Tuple[int, int]]:
-    spans: List[Tuple[int, int]] = []
-    cursor = 0
-    for word in words:
-        next_cursor = cursor + len(word)
-        spans.append((cursor, next_cursor))
-        cursor = next_cursor
-    return spans
-
-
-def segmentation_report(gold_word_lists: Sequence[Sequence[str]], pred_word_lists: Sequence[Sequence[str]]) -> Dict[str, float]:
+def chunking_report(gold_tag_lists: Sequence[Sequence[str]], pred_tag_lists: Sequence[Sequence[str]]) -> Dict[str, float]:
     gold_total = 0
     pred_total = 0
     correct_total = 0
     exact_match = 0
 
-    for gold_words, pred_words in zip(gold_word_lists, pred_word_lists):
-        gold_spans = set(words_to_spans(gold_words))
-        pred_spans = set(words_to_spans(pred_words))
-        gold_total += len(gold_spans)
-        pred_total += len(pred_spans)
-        correct_total += len(gold_spans & pred_spans)
-        if list(gold_words) == list(pred_words):
+    for gold_tags, pred_tags in zip(gold_tag_lists, pred_tag_lists):
+        gold_chunks = set(extract_chunks(gold_tags))
+        pred_chunks = set(extract_chunks(pred_tags))
+        gold_total += len(gold_chunks)
+        pred_total += len(pred_chunks)
+        correct_total += len(gold_chunks & pred_chunks)
+        if list(gold_tags) == list(pred_tags):
             exact_match += 1
 
     precision = correct_total / pred_total if pred_total else 0.0
     recall = correct_total / gold_total if gold_total else 0.0
     f1_score = 2 * precision * recall / (precision + recall + 1e-10)
-    sentence_acc = exact_match / len(gold_word_lists) if gold_word_lists else 0.0
+    sentence_acc = exact_match / len(gold_tag_lists) if gold_tag_lists else 0.0
 
     return {
         "precision": precision,
         "recall": recall,
         "f1_score": f1_score,
-        "gold_words": gold_total,
-        "pred_words": pred_total,
-        "correct_words": correct_total,
+        "gold_chunks": gold_total,
+        "pred_chunks": pred_total,
+        "correct_chunks": correct_total,
         "sentence_accuracy": sentence_acc,
-        "sentences": len(gold_word_lists),
+        "sentences": len(gold_tag_lists),
     }
 
 
-def render_segmentation_table(results: Dict[str, Dict[str, float]]) -> str:
-    header = "{:>12s}  {:>9} {:>9} {:>9} {:>10} {:>10}".format(
-        "model", "precision", "recall", "f1-score", "sent-acc", "pred-words"
+def render_chunking_report(metrics: Dict[str, float]) -> str:
+    return "\n".join(
+        [
+            "Chunk Metrics:",
+            "precision={:.4f} recall={:.4f} f1-score={:.4f} sent-acc={:.4f}".format(
+                metrics["precision"],
+                metrics["recall"],
+                metrics["f1_score"],
+                metrics["sentence_accuracy"],
+            ),
+            "gold_chunks={} pred_chunks={} correct_chunks={} sentences={}".format(
+                int(metrics["gold_chunks"]),
+                int(metrics["pred_chunks"]),
+                int(metrics["correct_chunks"]),
+                int(metrics["sentences"]),
+            ),
+        ]
+    )
+
+
+def render_chunking_table(results: Dict[str, Dict[str, float]]) -> str:
+    header = "{:>12s}  {:>9} {:>9} {:>9} {:>10} {:>11}".format(
+        "model", "precision", "recall", "f1-score", "sent-acc", "pred-chunks"
     )
     rows = [header]
     for model_name, metrics in results.items():
         rows.append(
-            "{:>12s}  {:>9.4f} {:>9.4f} {:>9.4f} {:>10.4f} {:>10}".format(
+            "{:>12s}  {:>9.4f} {:>9.4f} {:>9.4f} {:>10.4f} {:>11}".format(
                 model_name,
                 metrics["precision"],
                 metrics["recall"],
                 metrics["f1_score"],
                 metrics["sentence_accuracy"],
-                int(metrics["pred_words"]),
+                int(metrics["pred_chunks"]),
             )
         )
     return "\n".join(rows)
+
+
+def save_chunk_metrics(ctx, metrics: Dict[str, float], file_stem: str = "test_chunk_metrics") -> None:
+    ctx.save_json(ctx.reports_dir / f"{file_stem}.json", metrics)
+    ctx.save_text(ctx.reports_dir / f"{file_stem}.txt", render_chunking_report(metrics) + "\n")
 
 
 class RunContext(object):
@@ -523,7 +578,7 @@ def find_latest_artifact(output_root: str, model_type: str, model_name: str) -> 
 def run_crf_training(config):
     ctx = RunContext("crf", config.output_root, config.model_name, config.run_name)
     ctx.save_config(config)
-    ctx.log(f"读取数据集: {display_project_path(config.data_dir)}")
+    ctx.log(f"读取 BaseNP 数据集: {display_project_path(config.data_dir)}")
 
     train_word_lists, train_tag_lists, _, _ = build_corpus("train", data_dir=config.data_dir)
     test_word_lists, test_tag_lists = build_corpus("test", make_vocab=False, data_dir=config.data_dir)
@@ -548,17 +603,21 @@ def run_crf_training(config):
     stage_bar.close()
 
     metrics = Metrics(test_tag_lists, pred_tag_lists, remove_O=config.remove_o)
+    chunk_metrics = chunking_report(test_tag_lists, pred_tag_lists)
     ctx.log(metrics.render_scores())
     ctx.log(metrics.render_confusion_matrix())
+    ctx.log(render_chunking_report(chunk_metrics))
 
     ctx.save_model(model)
     ctx.save_metrics(metrics)
+    save_chunk_metrics(ctx, chunk_metrics)
     ctx.save_summary(
         {
             "model_type": "crf",
             "time_seconds": elapsed,
             "train_sentences": len(train_word_lists),
             "test_sentences": len(test_word_lists),
+            "chunk_metrics": chunk_metrics,
         }
     )
     return pred_tag_lists, metrics, ctx
@@ -567,7 +626,7 @@ def run_crf_training(config):
 def run_hmm_training(config):
     ctx = RunContext("hmm", config.output_root, config.model_name, config.run_name)
     ctx.save_config(config)
-    ctx.log(f"读取数据集: {display_project_path(config.data_dir)}")
+    ctx.log(f"读取 BaseNP 数据集: {display_project_path(config.data_dir)}")
 
     train_word_lists, train_tag_lists, word2id, tag2id = build_corpus("train", data_dir=config.data_dir)
     test_word_lists, test_tag_lists = build_corpus("test", make_vocab=False, data_dir=config.data_dir)
@@ -589,17 +648,21 @@ def run_hmm_training(config):
     stage_bar.close()
 
     metrics = Metrics(test_tag_lists, pred_tag_lists, remove_O=config.remove_o)
+    chunk_metrics = chunking_report(test_tag_lists, pred_tag_lists)
     ctx.log(metrics.render_scores())
     ctx.log(metrics.render_confusion_matrix())
+    ctx.log(render_chunking_report(chunk_metrics))
 
     ctx.save_model(model)
     ctx.save_metrics(metrics)
+    save_chunk_metrics(ctx, chunk_metrics)
     ctx.save_summary(
         {
             "model_type": "hmm",
             "time_seconds": elapsed,
             "train_sentences": len(train_word_lists),
             "test_sentences": len(test_word_lists),
+            "chunk_metrics": chunk_metrics,
         }
     )
     return pred_tag_lists, metrics, ctx
@@ -734,7 +797,7 @@ def run_bilstm_training(config, use_crf: bool = False):
     model_type = "bilstm_crf" if use_crf else "bilstm"
     ctx = RunContext(model_type, config.output_root, config.model_name, config.run_name)
     ctx.save_config(config)
-    ctx.log(f"读取数据集: {display_project_path(config.data_dir)}")
+    ctx.log(f"读取 BaseNP 数据集: {display_project_path(config.data_dir)}")
 
     train_word_lists, train_tag_lists, word2id, tag2id = build_corpus("train", data_dir=config.data_dir)
     dev_word_lists, dev_tag_lists = build_corpus("dev", make_vocab=False, data_dir=config.data_dir)
@@ -759,11 +822,14 @@ def run_bilstm_training(config, use_crf: bool = False):
     test_predict_bar.close()
 
     metrics = Metrics(recovered_test_tags, pred_tag_lists, remove_O=config.remove_o)
+    chunk_metrics = chunking_report(recovered_test_tags, pred_tag_lists)
     ctx.log(metrics.render_scores())
     ctx.log(metrics.render_confusion_matrix())
+    ctx.log(render_chunking_report(chunk_metrics))
 
     ctx.save_model(trainer)
     ctx.save_metrics(metrics)
+    save_chunk_metrics(ctx, chunk_metrics)
     ctx.save_summary(
         {
             "model_type": model_type,
@@ -773,6 +839,7 @@ def run_bilstm_training(config, use_crf: bool = False):
             "test_sentences": len(test_word_lists),
             "best_val_loss": trainer.best_val_loss,
             "history": trainer.history,
+            "chunk_metrics": chunk_metrics,
         }
     )
     return pred_tag_lists, recovered_test_tags, metrics, ctx

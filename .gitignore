@@ -1,20 +1,51 @@
-# Python caches
+# Python
 __pycache__/
 **/__pycache__/
 *.py[cod]
+*.pyo
+*.pyd
+*.so
+.python-version
 
-# Virtual or local env noise
+# Virtual environments
 .venv/
 venv/
+env/
 
-# Training outputs
-outputs/*
-!outputs/README.md
+# Packaging / build
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-# OS / editor
+# Jupyter / local tooling
+.ipynb_checkpoints/
+
+# Training artifacts
+outputs/
+checkpoints/
+logs/
+reports/
+
+# Local datasets and archives
+CTB/
+data/
+*.tgz
+*.tar
+*.tar.gz
+*.zip
+
+# Model artifacts
+*.pkl
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# IDE / OS
+.idea/
+.vscode/
 .DS_Store
 Thumbs.db
-CTB/
-env/
-ctb8_6dhnge9v/
-.tgz

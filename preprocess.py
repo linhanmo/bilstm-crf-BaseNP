@@ -10,8 +10,8 @@ import hanlp.datasets.parsing.loaders._ctb_utils as ctb_utils
 import hanlp.utils.io_util as io_util
 
 
-ARCHIVE_PATH = Path(r"e:\BaseNP\LDC2013T21.tgz")
-OUTPUT_ROOT = Path(r"e:\BaseNP\CTB")
+ARCHIVE_PATH = Path(r"LDC2013T21.tgz")
+OUTPUT_ROOT = Path(r"CTB")
 
 
 def decode_output(raw: bytes) -> str:
@@ -27,16 +27,131 @@ def patch_hanlp_windows_decoding() -> None:
     # HanLP 2.1.3 hardcodes utf-8 when decoding subprocess output, which breaks on
     # Chinese Windows when Java tools print GBK-encoded messages.
     def safe_get_exitcode_stdout_stderr(cmd: str) -> tuple[int, str, str]:
-        process = subprocess.Popen(
-            io_util.shlex.split(cmd),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
+        if os.name == 'nt':
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                shell=True,
+            )
+        else:
+            process = subprocess.Popen(
+                io_util.shlex.split(cmd),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
         stdout, stderr = process.communicate()
         return process.returncode, decode_output(stdout), decode_output(stderr)
 
     io_util.get_exitcode_stdout_stderr = safe_get_exitcode_stdout_stderr
     ctb_utils.get_exitcode_stdout_stderr = safe_get_exitcode_stdout_stderr
+
+    def safe_remove_all_ec(path: str) -> None:
+        script = io_util.get_resource('https://file.hankcs.com/bin/remove_ec.zip')
+        classpath = ';'.join([
+            'elit-ddr-0.0.5-SNAPSHOT.jar',
+            'elit-sdk-0.0.5-SNAPSHOT.jar',
+            'hanlp-1.7.8.jar',
+            'fastutil-8.1.1.jar',
+            '.',
+        ])
+        with io_util.pushd(script):
+            io_util.run_cmd(
+                f'java -cp {classpath} demo.RemoveEmptyCategoriesTreebank "{Path(path).as_posix()}"'
+            )
+
+    def safe_convert_to_dependency(src: str, dst: str, language: str = 'zh', version: str = '3.3.0',
+                                   conllx: bool = True, ud: bool = False) -> None:
+        ctb_utils.cprint(
+            f'Converting {os.path.basename(src)} to {os.path.basename(dst)} using Stanford Parser Version {version}. '
+            f'It might take a while [blink][yellow]...[/yellow][/blink]'
+        )
+        if version == '3.3.0':
+            sp_home = 'https://nlp.stanford.edu/software/stanford-parser-full-2013-11-12.zip'
+        elif version == '4.2.0':
+            sp_home = 'https://nlp.stanford.edu/software/stanford-parser-4.2.0.zip'
+        else:
+            raise ValueError(f'Unsupported version {version}')
+        sp_home = io_util.get_resource(sp_home)
+        if ud:
+            jclass = (
+                'edu.stanford.nlp.trees.international.pennchinese.UniversalChineseGrammaticalStructure'
+                if language == 'zh'
+                else 'edu.stanford.nlp.trees.ud.UniversalDependenciesConverter'
+            )
+        else:
+            jclass = (
+                'edu.stanford.nlp.trees.international.pennchinese.ChineseGrammaticalStructure'
+                if language == 'zh'
+                else 'edu.stanford.nlp.trees.EnglishGrammaticalStructure'
+            )
+        cmd = f'java -cp {Path(sp_home).as_posix()}/* {jclass} -treeFile "{Path(src).as_posix()}"'
+        if conllx:
+            cmd += ' -conllx'
+        if not ud:
+            cmd += ' -basic -keepPunct'
+        code, out, err = safe_get_exitcode_stdout_stderr(cmd)
+        with open(dst, 'w', encoding='utf-8', newline='\n') as file:
+            file.write(out)
+        if code:
+            raise RuntimeError(
+                f'Conversion failed with code {code} for {src}. The err message is:\n{err}\n'
+                f'Do you have java installed? Do you have enough memory?'
+            )
+
+    def safe_make_ctb_tasks(chtbs: list[str], out_root: str, part: str) -> None:
+        for task in ['cws', 'pos', 'par', 'dep']:
+            os.makedirs(Path(out_root) / task, exist_ok=True)
+        timer = ctb_utils.CountdownTimer(len(chtbs))
+        par_path = Path(out_root) / 'par' / f'{part}.txt'
+        with open(Path(out_root) / 'cws' / f'{part}.txt', 'w', encoding='utf-8', newline='\n') as cws, \
+                open(Path(out_root) / 'pos' / f'{part}.tsv', 'w', encoding='utf-8', newline='\n') as pos, \
+                open(par_path, 'w', encoding='utf-8', newline='\n') as par:
+            for file_path in chtbs:
+                with open(file_path, encoding='utf-8') as src:
+                    content = src.read()
+                    trees = ctb_utils.split_str_to_trees(content)
+                    for tree in trees:
+                        try:
+                            tree = ctb_utils.Tree.fromstring(tree)
+                        except ValueError:
+                            print(tree)
+                            raise
+                        words = []
+                        for word, tag in tree.pos():
+                            if tag == '-NONE-' or not tag:
+                                continue
+                            tag = tag.split('-')[0]
+                            if tag == 'X':
+                                tag = 'FW'
+                            pos.write(f'{word}\t{tag}\n')
+                            words.append(word)
+                        cws.write(' '.join(words))
+                        par.write(tree.pformat(margin=1_000_000))
+                        for fp in (cws, pos, par):
+                            fp.write('\n')
+                timer.log(
+                    f'Preprocesing the [blue]{part}[/blue] set of CTB [blink][yellow]...[/yellow][/blink]',
+                    erase=False,
+                )
+        safe_remove_all_ec(str(par_path))
+        dep_path = Path(out_root) / 'dep' / f'{part}.conllx'
+        safe_convert_to_dependency(str(par_path), str(dep_path))
+        sents = list(ctb_utils.read_conll(str(dep_path)))
+        with open(dep_path, 'w', encoding='utf-8', newline='\n') as out:
+            for sent in sents:
+                for cells in sent:
+                    tag = cells[3].split('-')[0]
+                    if tag == 'X':
+                        tag = 'FW'
+                    cells[3] = cells[4] = tag
+                    out.write('\t'.join(str(x) for x in cells))
+                    out.write('\n')
+                out.write('\n')
+
+    ctb_utils.remove_all_ec = safe_remove_all_ec
+    ctb_utils.convert_to_dependency = safe_convert_to_dependency
+    ctb_utils.make_ctb_tasks = safe_make_ctb_tasks
 
 
 def find_bracketed_dir(root: Path) -> Path:

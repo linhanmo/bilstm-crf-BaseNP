@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 
-DEFAULT_DATA_DIR = Path("ICWB2-BIOES") / "msr"
+DEFAULT_DATA_DIR = Path("data") / "basenp"
 DEFAULT_OUTPUT_ROOT = Path("outputs")
 
 

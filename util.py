@@ -1,8 +1,8 @@
 def word2features(sent, i):
-    """抽取单个字的特征"""
+    """抽取单个 token 的局部特征"""
     word = sent[i]
-    prev_word = "<s>" if i == 0 else sent[i-1]
-    next_word = "</s>" if i == (len(sent)-1) else sent[i+1]
+    prev_word = "<s>" if i == 0 else sent[i - 1]
+    next_word = "</s>" if i == (len(sent) - 1) else sent[i + 1]
     features = {
         'w': word,
         'w-1': prev_word,
