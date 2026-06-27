@@ -1,0 +1,5 @@
+tqdm
+sklearn-crfsuite
+python-crfsuite
+jieba
+torch

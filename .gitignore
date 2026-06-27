@@ -1,0 +1,20 @@
+# Python caches
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+# Virtual or local env noise
+.venv/
+venv/
+
+# Training outputs
+outputs/*
+!outputs/README.md
+
+# OS / editor
+.DS_Store
+Thumbs.db
+CTB/
+env/
+ctb8_6dhnge9v/
+.tgz
