@@ -32,6 +32,7 @@ reports/
 # Local datasets and archives
 CTB/
 data/
+LDC2013T21.tgz
 *.tgz
 *.tar
 *.tar.gz
