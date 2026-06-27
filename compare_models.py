@@ -170,24 +170,18 @@ def _jieba_predict_tag_lists(word_lists: Sequence[Sequence[str]], label: str) ->
     return pred_tag_lists
 
 
-def main():
-    parser = argparse.ArgumentParser(description="对比 jieba、CRF、HMM、BiLSTM、BiLSTM-CRF 的 BaseNP 效果")
-    parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR), help="数据集目录")
-    parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT), help="输出根目录")
-    parser.add_argument("--run-name", default=None, help="运行名称")
-    args = parser.parse_args()
-
-    ctx = RunContext("compare", args.output_root, "compare", args.run_name)
+def run_compare(data_dir: str, output_root: str, run_name: Optional[str] = None):
+    ctx = RunContext("compare", output_root, "compare", run_name)
     ctx.save_config(
         {
-            "data_dir": args.data_dir,
-            "output_root": args.output_root,
+            "data_dir": data_dir,
+            "output_root": output_root,
             "models": ["jieba", "hmm", "crf", "bilstm", "bilstm_crf"],
         }
     )
 
-    train_word_lists, train_tag_lists, word2id, tag2id = build_corpus("train", data_dir=args.data_dir)
-    test_word_lists, test_tag_lists = build_corpus("test", make_vocab=False, data_dir=args.data_dir)
+    train_word_lists, train_tag_lists, word2id, tag2id = build_corpus("train", data_dir=data_dir)
+    test_word_lists, test_tag_lists = build_corpus("test", make_vocab=False, data_dir=data_dir)
     primary_label = _infer_primary_label(list(train_tag_lists) + list(test_tag_lists))
     results = {}
     skipped = {}
@@ -199,14 +193,14 @@ def main():
         skipped["jieba"] = str(exc)
 
     try:
-        crf_model = load_pickle(find_latest_artifact(args.output_root, "crf", "crf"))
+        crf_model = load_pickle(find_latest_artifact(output_root, "crf", "crf"))
         crf_pred_tags = crf_model.test(test_word_lists)
         results["crf"] = chunking_report(test_tag_lists, crf_pred_tags)
     except Exception as exc:
         skipped["crf"] = str(exc)
 
     try:
-        hmm_model = load_pickle(find_latest_artifact(args.output_root, "hmm", "hmm"))
+        hmm_model = load_pickle(find_latest_artifact(output_root, "hmm", "hmm"))
         hmm_pred_tags = hmm_model.test(test_word_lists, word2id, tag2id)
         results["hmm"] = chunking_report(test_tag_lists, hmm_pred_tags)
     except Exception as exc:
@@ -214,7 +208,7 @@ def main():
 
     try:
         bilstm_word2id, bilstm_tag2id = extend_maps(word2id, tag2id, for_crf=False)
-        bilstm_model = load_pickle(find_latest_artifact(args.output_root, "bilstm", "bilstm"))
+        bilstm_model = load_pickle(find_latest_artifact(output_root, "bilstm", "bilstm"))
         _maybe_flatten_bilstm(bilstm_model)
         bilstm_pred_tags, _ = bilstm_model.predict(test_word_lists, test_tag_lists, bilstm_word2id, bilstm_tag2id)
         results["bilstm"] = chunking_report(test_tag_lists, bilstm_pred_tags)
@@ -223,7 +217,7 @@ def main():
 
     try:
         crf_word2id, crf_tag2id = extend_maps(word2id, tag2id, for_crf=True)
-        bilstm_crf_model = load_pickle(find_latest_artifact(args.output_root, "bilstm_crf", "bilstm_crf"))
+        bilstm_crf_model = load_pickle(find_latest_artifact(output_root, "bilstm_crf", "bilstm_crf"))
         _maybe_flatten_bilstm(bilstm_crf_model)
         test_words_crf, test_tags_crf = preprocess_data_for_lstmcrf(test_word_lists, test_tag_lists, test=True)
         bilstm_crf_pred_tags, _ = bilstm_crf_model.predict(test_words_crf, test_tags_crf, crf_word2id, crf_tag2id)
@@ -245,6 +239,16 @@ def main():
     ctx.save_json(ctx.reports_dir / "compare_metrics.json", results)
     ctx.save_text(ctx.reports_dir / "compare_metrics.txt", table + "\n")
     ctx.save_summary({"model_type": "compare", "models": list(results.keys()), "skipped": skipped})
+    return {"results": results, "skipped": skipped, "table": table, "run_dir": str(ctx.run_dir)}
+
+
+def main():
+    parser = argparse.ArgumentParser(description="对比 jieba、CRF、HMM、BiLSTM、BiLSTM-CRF 的 BaseNP 效果")
+    parser.add_argument("--data-dir", default=str(DEFAULT_DATA_DIR), help="数据集目录")
+    parser.add_argument("--output-root", default=str(DEFAULT_OUTPUT_ROOT), help="输出根目录")
+    parser.add_argument("--run-name", default=None, help="运行名称")
+    args = parser.parse_args()
+    run_compare(args.data_dir, args.output_root, args.run_name)
 
 
 
